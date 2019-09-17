@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 import rospy
+import inspect
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 import message_filters
-
+import csv
 import cv2
 import sm
 import aslam_cv as acv
@@ -19,11 +20,16 @@ import pylab as pl
 import argparse
 import sys
 import getopt
-import igraph
 
+import igraph
+import pandas as pd
+import copy
 # make numpy print prettier
 np.set_printoptions(suppress=True)
 
+SAVE_RES_DIR = "./result/" #include /
+
+count = 0 
 class CalibrationTargetDetector(object):
     def __init__(self, camera, targetConfig):
 
@@ -57,6 +63,11 @@ class CalibrationTargetDetector(object):
         #setup detector
         options = acv.GridDetectorOptions() 
         options.filterCornerOutliers = True
+        #options.filterCornerOutliers = False
+        
+        #print(camera.geometry.projection().getParameters().flatten())
+        #for x in inspect.getmembers(camera.geometry, inspect.ismethod):
+        #    print x[0]
         self.detector = acv.GridDetector(camera.geometry, grid, options)
     
 class CameraChainValidator(object):
@@ -100,40 +111,45 @@ class CameraChainValidator(object):
             edge["A"][cidx_dest] = self.prepareStereoRectificationMaps(cidx_src, cidx_dest)
                 
         #register the callback for the synchronized images
-        sync_sub = message_filters.TimeSynchronizer([val.image_sub for val in self.monovalidators],1)
+        #sync_sub = message_filters.TimeSynchronizer([val.image_sub for val in self.monovalidators],1)
+        sync_sub = message_filters.ApproximateTimeSynchronizer([val.image_sub for val in self.monovalidators], 1, 0.10)
         sync_sub.registerCallback(self.synchronizedCallback)
 
         #initialize message throttler
         self.timeLast = 0
+        self.count = 0
 
     def synchronizedCallback(self, *cam_msgs):
+
         #throttle image processing
-        rate = 2 #Hz
+        rate = 1 #Hz
         timeNow = time.time()
         if (timeNow-self.timeLast < 1.0/rate) and self.timeLast!=0:
             return
         self.timeLast = timeNow
          
         #process the images of all cameras
-        self.observations=[]; 
+        self.observations=[];
         for cam_nr, msg in enumerate(cam_msgs):
+
           
             #convert image to numpy
             try:
-                if (msg.encoding == "rgb8"):
+                if (msg.encoding == "rgb8" or msg.encoding == "bgra8"):
                   cv_image = np.squeeze(np.array(self.bridge.imgmsg_to_cv2(msg, "mono8")))
                 else:
                   cv_image = self.bridge.imgmsg_to_cv2(msg)
                 np_image = np.array(cv_image)
             except CvBridgeError, e:
                 print e
-            
+
             #get the corresponding monovalidator instance
             validator = self.monovalidators[cam_nr]
             
             #detect targets for all cams
             timestamp = acv.Time(msg.header.stamp.secs, msg.header.stamp.nsecs)
             success, observation = validator.target.detector.findTarget(timestamp, np_image)
+
             observation.clearImage()
             validator.obs = observation
             
@@ -142,17 +158,19 @@ class CameraChainValidator(object):
                 validator.undist_image = validator.undistorter.undistortImageToPinhole(np_image)
             else:
                 validator.undist_image = validator.undistorter.undistortImage(np_image)
-                            
+
             #generate a mono view for each cam
-            validator.generateMonoview(np_image, observation, success)            
+            validator.dist_image = copy.deepcopy(np_image)                
+            validator.generateMonoview(np_image, observation, success, self.count)
             
         #generate all rectification views
         for edge in self.G.es:
             cidx_src = edge.source
             cidx_dest = edge.target
-            self.generatePairView(cidx_src, cidx_dest)
-                
-        cv2.waitKey(1)
+            self.generatePairView(cidx_src, cidx_dest, self.count)
+
+        cv2.waitKey(10)
+        self.count = self.count + 1
     
     #returns transformation T_to_from
     def getTransformationCamFromTo(self, cidx_from, cidx_to):
@@ -189,10 +207,13 @@ class CameraChainValidator(object):
         
         return np_rect_image
 
-    def generatePairView(self, camAnr, camBnr):
+    def generatePairView(self, camAnr, camBnr, count):
         #prepare the window
         windowName = "Rectified view (cam{0} and cam{1})".format(camAnr, camBnr)
-        cv2.namedWindow(windowName, 1)
+        print("windowName:" + windowName)
+        '''
+        cv2.namedWindow(windowName, cv2.WINDOW_AUTOSIZ)
+        '''
             
         #get the mono validators for each cam
         camA = self.monovalidators[camAnr]
@@ -213,6 +234,9 @@ class CameraChainValidator(object):
         
         #project points from camera A to cam B to compare with detection
         #and vice versa
+        points_A = []
+        points_B = []            
+
         if len(common_ids) > 0:
             #add to new list
             commonKeypoints_A=[]; commonKeypoints_B=[]; reprojs_A=[]; reprojs_B=[]
@@ -223,26 +247,64 @@ class CameraChainValidator(object):
                 commonKeypoints_B.append( keypoints_B[np.where(keypoints_B_id==id)] )
                 commonTargetPoints.append( targetPoints[np.where(keypoints_A_id==id)] )
             
-            
             for keypoint_A, keypoint_B, targetPoint in zip(commonKeypoints_A, commonKeypoints_B, commonTargetPoints):
                 #reproject
                 T_AW = camA.obs.T_t_c().inverse()
                 T_BW_base = T_BA*T_AW
                 reprojB = np.matrix(T_BW_base.C()) * np.matrix(targetPoint).reshape(3,1) + np.matrix(T_BW_base.t()).reshape(3,1)
                 reprojErr_B = camB.camera.geometry.euclideanToKeypoint(reprojB) - keypoint_B
+                _reprojectedTargetB2A = np.matrix(T_AW.C()) * np.matrix(targetPoint).reshape(3,1) + np.matrix(T_AW.t()).reshape(3,1)
+                reprojectedTargetB2A = camA.camera.geometry.euclideanToKeypoint(_reprojectedTargetB2A)
+                reproject_keypoint_B = camB.camera.geometry.euclideanToKeypoint(np.matrix(T_BA.C()) * _reprojectedTargetB2A  + np.matrix(T_BA.t()).reshape(3,1))
+                _err_reproject_B = camB.camera.geometry.euclideanToKeypoint(np.matrix(T_BA.C()) * _reprojectedTargetB2A  + np.matrix(T_BA.t()).reshape(3,1)) - keypoint_B
+                err_reproject_B = np.sum(_err_reproject_B**2)
+                sum_reprojErr_B = np.sum(reprojErr_B**2)
                 
                 T_BW = camB.obs.T_t_c().inverse()
                 T_AW_base = T_BA.inverse()*T_BW
                 reprojA = np.matrix(T_AW_base.C()) * np.matrix(targetPoint).reshape(3,1) + np.matrix(T_AW_base.t()).reshape(3,1)
                 reprojErr_A = camA.camera.geometry.euclideanToKeypoint(reprojA) - keypoint_A
+                _reprojectedTargetA2B = np.matrix(T_BW.C()) * np.matrix(targetPoint).reshape(3,1) + np.matrix(T_BW.t()).reshape(3,1)
+                reprojectedTargetA2B = camB.camera.geometry.euclideanToKeypoint(_reprojectedTargetA2B)
+                reproject_keypoint_A = camA.camera.geometry.euclideanToKeypoint(np.matrix(T_BA.inverse().C()) * _reprojectedTargetA2B  + np.matrix(T_BA.inverse().t()).reshape(3,1))
+                _err_reproject_A = camA.camera.geometry.euclideanToKeypoint(np.matrix(T_BA.inverse().C()) * _reprojectedTargetA2B  + np.matrix(T_BA.inverse().t()).reshape(3,1)) - keypoint_A
+                print(np.matrix(T_BA.inverse().C()))
+                print(np.matrix(T_BA.inverse().t()).reshape(3,1))
+                err_reproject_A = np.sum(_err_reproject_A**2)
+                sum_reprojErr_A = np.sum(reprojErr_A**2)
                 
-                #reprojection errors in original camera geomtery
+                '''
+                print()
+                print("T_AW:")
+                print(np.matrix(T_AW.T()))
+                print("T_BW:")
+                print(np.matrix(T_BW.T()))
+                print("T_BA:")
+                print(np.matrix(T_BA.T()))
+                print("target point")                
+                print(targetPoint)
+                '''
+                _reprojectedTargetB2A = np.asarray(_reprojectedTargetB2A).flatten()
+                _reprojectedTargetA2B = np.asarray(_reprojectedTargetA2B).flatten()
+                _output_B = np.r_[keypoint_B[0], camB.camera.geometry.euclideanToKeypoint(reprojB), _reprojectedTargetB2A, reprojectedTargetB2A, np.array([sum_reprojErr_B, err_reproject_B]), reproject_keypoint_B]
+                _output_A = np.r_[keypoint_A[0], camA.camera.geometry.euclideanToKeypoint(reprojA), _reprojectedTargetA2B, reprojectedTargetA2B, np.array([sum_reprojErr_A, err_reproject_A]), reproject_keypoint_A]
+#                print(np.matrix(T_BA.inverse().C()))
+#                print(np.matrix(T_BA.inverse().t()))                
+                
                 reproj_errs = np.hstack((reproj_errs, reprojErr_A.flatten()))
-                reproj_errs = np.hstack((reproj_errs, reprojErr_B.flatten()))     
+                reproj_errs = np.hstack((reproj_errs, reprojErr_B.flatten()))
+                points_A.append(_output_A)
+                points_B.append(_output_B)
+                
                 
             reproj_errs = reproj_errs[2:]
             reproj_errs = reproj_errs.reshape(2, reproj_errs.shape[0]/2)
-                    
+
+
+        if((len(points_A)>0) and (len(points_B)>0)):
+            points_A = np.asarray(points_A)
+            points_B = np.asarray(points_B)
+        
         #rectify the undistorted images
         edge_idx = self.G.get_eid(camAnr, camBnr)
         edge = self.G.es[edge_idx]
@@ -293,8 +355,40 @@ class CameraChainValidator(object):
         else:
  
             cv2.putText(np_image_rect, "Detection failed...", (np_image_rect.shape[0]/2,np_image_rect.shape[1]/5), cv2.FONT_HERSHEY_SIMPLEX, fontScale=2, color=(0, 0, 255), thickness=3)
-            
-        cv2.imshow(windowName, np_image_rect)
+
+
+        cv2.imwrite(SAVE_RES_DIR + windowName+"_%04d.png"%(count), np_image_rect)
+        np.savetxt(SAVE_RES_DIR + "cam%d_%04d.csv"%(camAnr,count), points_A, delimiter=",")
+        np.savetxt(SAVE_RES_DIR + "cam%d_%04d.csv"%(camBnr,count), points_B, delimiter=",")
+
+
+        camIdealA = camA.undist_camera.projection().getParameters().flatten()
+        camIdealB = camB.undist_camera.projection().getParameters().flatten()
+        print("camA")
+        print(camIdealA)
+        print("camB")
+        print(camIdealB)        
+        if((len(points_A)>0) and (len(points_B)>0)):
+            img_A = copy.deepcopy(camA.dist_image)
+            img_B = copy.deepcopy(camB.dist_image)
+            img_A = cv2.cvtColor(img_A, cv2.COLOR_GRAY2BGR)
+            img_B = cv2.cvtColor(img_B, cv2.COLOR_GRAY2BGR)
+
+
+            for i in range(points_A.shape[0]):
+                cv2.circle(img_A,(int(points_A[i,2]), int(points_A[i,3])),2,(0,0,255),3)
+                cv2.circle(img_A,(int(points_A[i,0]), int(points_A[i,1])),1,(0,255,0),3)
+                img_A = cv2.arrowedLine(img_A, (int(points_A[i,2]), int(points_A[i,3])), (int(points_A[i,0]), int(points_A[i,1])), (255,255,0))                
+            for i in range(points_B.shape[0]):
+                cv2.circle(img_B,(int(points_B[i,2]), int(points_B[i,3])),2,(0,0,255),3)            
+                cv2.circle(img_B,(int(points_B[i,0]), int(points_B[i,1])),1,(0,255,0),3)
+                img_B = cv2.arrowedLine(img_B, (int(points_B[i,2]), int(points_B[i,3])), (int(points_B[i,0]), int(points_B[i,1])), (255,255,0))
+
+#                cv2.circle(img_B,(int(points_B[i,0]), int(points_B[i,1])),1,(0,0,255),3)                
+            cv2.imwrite(SAVE_RES_DIR + "cam%d_%04d.png"%(camAnr,count), img_A)
+            cv2.imwrite(SAVE_RES_DIR + "cam%d_%04d.png"%(camBnr,count), img_B)
+        
+#        cv2.imshow(windowName, np_image_rect)
     
     
     def prepareStereoRectificationMaps(self, camAnr, camBnr):        
@@ -378,7 +472,7 @@ class MonoCameraValidator(object):
         
         self.topic = camConfig.getRosTopic()
         self.windowName = "Camera: {0}".format(self.topic)
-        cv2.namedWindow(self.windowName, 1)
+        #cv2.namedWindow(self.windowName, 1)
     
         #register the cam topic to the message synchronizer
         self.image_sub = message_filters.Subscriber(self.topic, Image)
@@ -397,22 +491,26 @@ class MonoCameraValidator(object):
         #storage for reproj errors
         self.cornersImage = list()
         self.reprojectionErrors = list()
+        self.dist_image = None
         
-    
-    def generateMonoview(self, np_image, observation, obs_valid):
+    def generateMonoview(self, np_image, observation, obs_valid, count):
         np_image = cv2.cvtColor(np_image, cv2.COLOR_GRAY2BGR)
-
+        
+        print("obs_valid:")
+        print(obs_valid)
+        
         if obs_valid:
             #calculate the reprojection error statistics
             cornersImage = observation.getCornersImageFrame();
             cornersReproj = observation.getCornerReprojection(self.camera.geometry);
-            
+
             reprojectionErrors2 = cornersImage-cornersReproj
             reprojectionErrors = np.sum(np.abs(reprojectionErrors2)**2, axis=-1)**(1./2)
-            
+
             #save the errors for reprojection error map plotting
             self.cornersImage.append(cornersImage)
             self.reprojectionErrors.append(reprojectionErrors)
+
             
             outputList = [ ( "mean_x:  ", np.mean(reprojectionErrors2[:,0]) ),
                            ( "std_x:   ", np.std(reprojectionErrors2[:,0]) ),
@@ -431,6 +529,7 @@ class MonoCameraValidator(object):
 
             #print the text
             y = 20; x = 20
+
             for err_txt, err_val in outputList:
                 fontScale = 0.75
                 y += int(42*fontScale)
@@ -452,9 +551,14 @@ class MonoCameraValidator(object):
 
         else:
             cv2.putText(np_image, "Detection failed...", (np_image.shape[0]/2,np_image.shape[1]/5), cv2.FONT_HERSHEY_SIMPLEX, fontScale=1.5, color=(0, 0, 255), thickness=2)
+        
+        #cv2.imshow(self.windowName, np_image)
 
-        cv2.imshow(self.windowName, np_image)
-        cv2.waitKey(1)
+        _windowName = self.windowName
+        _windowName = _windowName.replace('/', '_')
+        print(_windowName+"_%04d.png"%(count))        
+        cv2.imwrite(SAVE_RES_DIR + _windowName+"_%04d.png"%(count), np_image)
+#        cv2.waitKey(10)
 
 
 if __name__ == "__main__":        
