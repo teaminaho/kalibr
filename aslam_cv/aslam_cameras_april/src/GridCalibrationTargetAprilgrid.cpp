@@ -33,7 +33,8 @@ GridCalibrationTargetAprilgrid::GridCalibrationTargetAprilgrid(
       _tagSize(tagSize),
       _tagSpacing(tagSpacing),
       _options(options),
-      _tagCodes(AprilTags::tagCodes36h11) {
+      //_tagCodes(AprilTags::tagCodes36h11) {
+      _tagCodes(AprilTags::tagCodes36h9) {        
   SM_ASSERT_GT(Exception, tagSize, 0.0, "tagSize has to be positive");
   SM_ASSERT_GT(Exception, tagSpacing, 0.0, "tagSpacing has to be positive");
 
@@ -45,11 +46,39 @@ GridCalibrationTargetAprilgrid::GridCalibrationTargetAprilgrid(
 
   //start the output window if requested
   initialize();
+  multi_board_mode = false;    
+}
+
+GridCalibrationTargetAprilgrid::GridCalibrationTargetAprilgrid(
+    size_t tagRows, size_t tagCols, double tagSize, double tagSpacing, size_t numBoard,
+    const AprilgridOptions &options)
+    : GridCalibrationTargetBase(2 * tagRows, 2 * tagCols),  //4 points per tag
+      _tagSize(tagSize),
+      _tagSpacing(tagSpacing),
+      _numBoard(numBoard),
+      _options(options),
+      //_tagCodes(AprilTags::tagCodes36h11) {
+      _tagCodes(AprilTags::tagCodes36h9) {
+  SM_ASSERT_GT(Exception, tagSize, 0.0, "tagSize has to be positive");
+  SM_ASSERT_GT(Exception, tagSpacing, 0.0, "tagSpacing has to be positive");
+
+  // allocate memory for the grid points
+  _points.resize(size(), 3);
+
+  //initialize a normal grid (checkerboard and circlegrids)
+  createGridPoints();
+
+  //start the output window if requested
+  initialize();
+
+  std::cout << "multi_board_mode enabled" << std::endl;
+  multi_board_mode = true;  
 }
 
 //protected ctor for serialization
 GridCalibrationTargetAprilgrid::GridCalibrationTargetAprilgrid() :
-      _tagCodes(AprilTags::tagCodes36h11)
+      //_tagCodes(AprilTags::tagCodes36h11)
+      _tagCodes(AprilTags::tagCodes36h9)
 {}
 
 /// \brief initialize the object
@@ -128,8 +157,15 @@ bool GridCalibrationTargetAprilgrid::computeObservation(
       remove |= true;
 
     //also remove if the tag ID is out-of-range for this grid (faulty detection)
-    if (iter->id >= (int) size() / 4)
-      remove |= true;
+    if(!multi_board_mode){
+      if (iter->id >= (int) size() / 4)
+        remove |= true;      
+    }else{
+      unsigned int tagId = (iter->id - iter->id%_numBoard)/ _numBoard;
+      if (tagId >= (unsigned int) size() / 4)
+        remove |= true;            
+    }
+
 
     // delete flagged tags
     if (remove) {
@@ -281,7 +317,12 @@ bool GridCalibrationTargetAprilgrid::computeObservation(
 
   for (unsigned int i = 0; i < detections.size(); i++) {
     // get the tag id
-    unsigned int tagId = detections[i].id;
+    unsigned int tagId;
+    if(!multi_board_mode){
+      tagId = detections[i].id ;
+    }else{
+      tagId = (detections[i].id - detections[i].id%_numBoard)/ _numBoard;
+    }
 
     // calculate the grid idx for all four tag corners given the tagId and cols
     unsigned int baseId = (int) (tagId / (_cols / 2)) * _cols * 2

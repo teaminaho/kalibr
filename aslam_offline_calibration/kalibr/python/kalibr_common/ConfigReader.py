@@ -534,7 +534,8 @@ class CalibrationTargetParameters(ParametersBase):
     def checkTargetType(self, target_type):
         targetTypes = ['aprilgrid', 
                        'checkerboard',
-                       'circlegrid']
+                       'circlegrid',
+                       'aprilgrid_multi']
         
         if target_type not in targetTypes:
             self.raiseError('Unknown calibration target type. Supported types: {0}. )'.format(targetTypes) )
@@ -620,7 +621,35 @@ class CalibrationTargetParameters(ParametersBase):
                             'tagSize': tagSize,
                             'tagSpacing': tagSpacing,
                             'targetType': targetType}
+
+        elif targetType == 'aprilgrid_multi':
+            try:
+                tagRows = self.data["tagRows"]
+                tagCols = self.data["tagCols"]
+                tagSize = self.data["tagSize"]
+                tagSpacing = self.data["tagSpacing"]
+                numBoard = self.data["numBoard"]
+            except KeyError, e:
+                self.raiseError("Calibration target configuration in {0} is missing the field: {1}".format(self.yamlFile, str(e)) )
             
+            if not isinstance(tagRows,int) or tagRows < 3:
+                errList.append("invalid tagRows (int>=3)")
+            if not isinstance(tagCols,int) or tagCols < 3:
+                errList.append("invalid tagCols (int>=3)")
+            if not isinstance(tagSize,float) or tagSize <= 0.0:
+                errList.append("invalid tagSize (float)")
+            if not isinstance(tagSpacing,float) or tagSpacing <= 0.0:
+                errList.append("invalid tagSpacing (float)")
+            if not isinstance(numBoard,int) or numBoard < 1:
+                errList.append("invalid tagSpacing (int >= 1)")
+                
+            targetParams = {'tagRows': tagRows,
+                            'tagCols': tagCols,
+                            'tagSize': tagSize,
+                            'tagSpacing': tagSpacing,
+                            'numBoard': numBoard,
+                            'targetType': targetType}
+
         return targetParams
         
     ###################################################
@@ -641,6 +670,12 @@ class CalibrationTargetParameters(ParametersBase):
             print >> dest, "    Count: {0}".format(targetParams['targetCols'])
             print >> dest, "    Distance: {0} [m]".format(targetParams['colSpacingMeters'])
         elif targetType == 'aprilgrid':
+            print >> dest, "  Tags: "
+            print >> dest, "    Rows: {0}".format(targetParams['tagRows'])
+            print >> dest, "    Cols: {0}".format(targetParams['tagCols'])
+            print >> dest, "    Size: {0} [m]".format(targetParams['tagSize'])
+            print >> dest, "    Spacing {0} [m]".format( targetParams['tagSize']*targetParams['tagSpacing'] )
+        elif targetType == 'aprilgrid_multi':
             print >> dest, "  Tags: "
             print >> dest, "    Rows: {0}".format(targetParams['tagRows'])
             print >> dest, "    Cols: {0}".format(targetParams['tagCols'])

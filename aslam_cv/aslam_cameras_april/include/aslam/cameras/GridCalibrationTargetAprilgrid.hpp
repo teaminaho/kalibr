@@ -14,7 +14,7 @@
 //#include "apriltags/Tag16h5.h"
 //#include "apriltags/Tag25h7.h"
 //#include "apriltags/Tag25h9.h"
-//#include "apriltags/Tag36h9.h"
+#include "apriltags/Tag36h9.h"
 #include "apriltags/Tag36h11.h"
 
 namespace aslam {
@@ -85,6 +85,10 @@ class GridCalibrationTargetAprilgrid : public GridCalibrationTargetBase {
   GridCalibrationTargetAprilgrid(size_t tagRows, size_t tagCols, double tagSize,
                                  double tagSpacing, const AprilgridOptions &options = AprilgridOptions());
 
+  GridCalibrationTargetAprilgrid(size_t tagRows, size_t tagCols, double tagSize, 
+                                 double tagSpacing, size_t numBoard, const AprilgridOptions &options = AprilgridOptions());
+
+
   virtual ~GridCalibrationTargetAprilgrid() {};
 
   /// \brief extract the calibration target points from an image and write to an observation
@@ -146,6 +150,10 @@ class GridCalibrationTargetAprilgrid : public GridCalibrationTargetBase {
     ar >> BOOST_SERIALIZATION_NVP(_options);
     initialize();
   }
+
+  public:
+    bool multi_board_mode;  
+    size_t _numBoard;
 };
 
 

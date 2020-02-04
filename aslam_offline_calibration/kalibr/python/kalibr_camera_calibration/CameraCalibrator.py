@@ -115,6 +115,17 @@ class TargetDetector(object):
                                                                  targetParams['tagSize'], 
                                                                  targetParams['tagSpacing'], 
                                                                  options)
+        elif targetType == 'aprilgrid_multi':
+            options = acv_april.AprilgridOptions()
+            options.minTagsForValidObs = int( np.max( [targetParams['tagRows'], targetParams['tagCols']] ) + 1 )
+            options.showExtractionVideo = showCorners
+            
+            self.grid = acv_april.GridCalibrationTargetAprilgrid(targetParams['tagRows'], 
+                                                                 targetParams['tagCols'], 
+                                                                 targetParams['tagSize'], 
+                                                                 targetParams['tagSpacing'], 
+                                                                 targetParams['numBoard'],
+                                                                 options)
         else:
             RuntimeError('Unknown calibration target type!')
 
