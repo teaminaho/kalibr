@@ -57,6 +57,15 @@ class CalibrationTargetDetector(object):
                                                             targetParams['tagCols'], 
                                                             targetParams['tagSize'], 
                                                             targetParams['tagSpacing'])
+
+        elif targetType == 'aprilgrid_multi':
+            grid = acv_april.GridCalibrationTargetAprilgrid(targetParams['tagRows'], 
+                                                                 targetParams['tagCols'], 
+                                                                 targetParams['tagSize'], 
+                                                                 targetParams['tagSpacing'], 
+                                                                 targetParams['numBoard'])
+
+
         else:
             raise RuntimeError( "Unknown calibration target." )
         
@@ -295,7 +304,6 @@ class CameraChainValidator(object):
                 reproj_errs = np.hstack((reproj_errs, reprojErr_B.flatten()))
                 points_A.append(_output_A)
                 points_B.append(_output_B)
-                
                 
             reproj_errs = reproj_errs[2:]
             reproj_errs = reproj_errs.reshape(2, reproj_errs.shape[0]/2)
@@ -566,8 +574,11 @@ if __name__ == "__main__":
     parser.add_argument('--target', dest='targetYaml', help='Calibration target configuration as yaml file', required=True)
     parser.add_argument('--cam', dest='chainYaml', help='Camera configuration as yaml file', required=True)
     parser.add_argument('--verbose', action='store_true', dest='verbose', help='Verbose output')
+    parser.add_argument('--savedir', dest='savedir', help='SaveDir')
     parsed = parser.parse_args()
-        
+
+    global SAVE_RES_DIR
+    SAVE_RES_DIR = parsed.savedir
     if parsed.verbose:
         sm.setLoggingLevel(sm.LoggingLevel.Debug)
     else:
