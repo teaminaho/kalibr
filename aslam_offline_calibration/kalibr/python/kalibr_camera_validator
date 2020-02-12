@@ -14,6 +14,7 @@ import aslam_cameras_april as acv_april
 import kalibr_common as kc
 
 import os
+import os.path as osp
 import time
 import numpy as np
 import pylab as pl
@@ -59,11 +60,15 @@ class CalibrationTargetDetector(object):
                                                             targetParams['tagSpacing'])
 
         elif targetType == 'aprilgrid_multi':
+            options = acv_april.AprilgridOptions()
+            options.minTagsForValidObs = int( np.max( [targetParams['tagRows'], targetParams['tagCols']] ) + 1 )
+
             grid = acv_april.GridCalibrationTargetAprilgrid(targetParams['tagRows'], 
                                                                  targetParams['tagCols'], 
                                                                  targetParams['tagSize'], 
                                                                  targetParams['tagSpacing'], 
-                                                                 targetParams['numBoard'])
+                                                                 targetParams['numBoard'],
+                                                                 options)
 
 
         else:
@@ -365,9 +370,9 @@ class CameraChainValidator(object):
             cv2.putText(np_image_rect, "Detection failed...", (np_image_rect.shape[0]/2,np_image_rect.shape[1]/5), cv2.FONT_HERSHEY_SIMPLEX, fontScale=2, color=(0, 0, 255), thickness=3)
 
 
-        cv2.imwrite(SAVE_RES_DIR + windowName+"_%04d.png"%(count), np_image_rect)
-        np.savetxt(SAVE_RES_DIR + "cam%d_%04d.csv"%(camAnr,count), points_A, delimiter=",")
-        np.savetxt(SAVE_RES_DIR + "cam%d_%04d.csv"%(camBnr,count), points_B, delimiter=",")
+        cv2.imwrite(osp.join(SAVE_RES_DIR, windowName+"_%04d.png"%(count)), np_image_rect)
+        np.savetxt(osp.join(SAVE_RES_DIR, "cam%d_%04d.csv"%(camAnr,count)), points_A, delimiter=",")
+        np.savetxt(osp.join(SAVE_RES_DIR, "cam%d_%04d.csv"%(camBnr,count)), points_B, delimiter=",")
 
 
         camIdealA = camA.undist_camera.projection().getParameters().flatten()
@@ -393,8 +398,8 @@ class CameraChainValidator(object):
                 img_B = cv2.arrowedLine(img_B, (int(points_B[i,2]), int(points_B[i,3])), (int(points_B[i,0]), int(points_B[i,1])), (255,255,0))
 
 #                cv2.circle(img_B,(int(points_B[i,0]), int(points_B[i,1])),1,(0,0,255),3)                
-            cv2.imwrite(SAVE_RES_DIR + "cam%d_%04d.png"%(camAnr,count), img_A)
-            cv2.imwrite(SAVE_RES_DIR + "cam%d_%04d.png"%(camBnr,count), img_B)
+            cv2.imwrite(osp.join(SAVE_RES_DIR, "cam%d_%04d.png"%(camAnr,count)), img_A)
+            cv2.imwrite(osp.join(SAVE_RES_DIR, "cam%d_%04d.png"%(camBnr,count)), img_B)
         
 #        cv2.imshow(windowName, np_image_rect)
     
@@ -565,9 +570,8 @@ class MonoCameraValidator(object):
         _windowName = self.windowName
         _windowName = _windowName.replace('/', '_')
         print(_windowName+"_%04d.png"%(count))        
-        cv2.imwrite(SAVE_RES_DIR + _windowName+"_%04d.png"%(count), np_image)
+        cv2.imwrite(osp.join(SAVE_RES_DIR, _windowName+"_%04d.png"%(count)), np_image)
 #        cv2.waitKey(10)
-
 
 if __name__ == "__main__":        
     parser = argparse.ArgumentParser(description='Validate the intrinsics of a camera.')
@@ -578,7 +582,7 @@ if __name__ == "__main__":
     parsed = parser.parse_args()
 
     global SAVE_RES_DIR
-    SAVE_RES_DIR = parsed.savedir
+    SAVE_RES_DIR = os.path.normpath(parsed.savedir)
     if parsed.verbose:
         sm.setLoggingLevel(sm.LoggingLevel.Debug)
     else:
