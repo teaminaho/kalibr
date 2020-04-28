@@ -1,11 +1,12 @@
 #!/bin/bash
 
 function run_with_docker() {
+     \
     sudo docker run -it --rm -v "/:/host" -w "/host/$(pwd)" kalibr:latest "$@"
 }
 
 function kalibr_calibrate_cameras() {
-    run_with_docker kalibr_calibrate_cameras --dont-show-report "$@"
+    run_with_docker kalibr_calibrate_cameras "$@"
 }
 
 function rosbag() {

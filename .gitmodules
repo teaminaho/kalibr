@@ -1,0 +1,4 @@
+[submodule "apriltag_detector_pywrapper"]
+	path = apriltag_detector_pywrapper
+	url = https://github.com/yuki-inaho/apriltag_detector_pywrapper.git
+	branch = master
