@@ -41,4 +41,4 @@ RUN cp -a /app $CATKIN_WORKSPACE/src/kalibr
 
 RUN ./setup.sh
 
-RUN sed -i '$isource "/ws/devel/setup.bash"' /ros_entrypoint.sh
+RUN sed -i '$isource "/home/catkin_ws/devel/setup.bash"' /ros_entrypoint.sh
