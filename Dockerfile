@@ -39,6 +39,7 @@ WORKDIR /app
 COPY . /app
 RUN cp -a /app $CATKIN_WORKSPACE/src/kalibr
 
+ENV PATH $PATH:/home/catkin_ws/src/kalibr/aslam_offline_calibration/kalibr/python
 RUN ./setup.sh
 
 RUN sed -i '$isource "/home/catkin_ws/devel/setup.bash"' /ros_entrypoint.sh

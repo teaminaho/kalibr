@@ -1,7 +1,6 @@
 #!/bin/bash
 
 function run_with_docker() {
-     \
     sudo docker run -it --rm -v "/:/host" -w "/host/$(pwd)" kalibr:latest "$@"
 }
 
@@ -15,4 +14,8 @@ function rosbag() {
 
 function kalibr_bagcreater() {
     run_with_docker kalibr_bagcreater "$@"
+}
+
+function arrange_dir(){
+    run_with_docker arrange_dir "$@"
 }

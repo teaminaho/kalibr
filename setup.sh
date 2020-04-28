@@ -2,12 +2,15 @@
 
 #Install python dependency 
 pip install --upgrade pip
+pip install -r requirements.txt  --user
 
 #Install apriltag_detector_pywrapper
 cd apriltag_detector_pywrapper/
 pip install -r requirements.txt  --user
 python setup.py install --user
 cd ..
+
+
 
 source /opt/ros/kinetic/setup.bash
 echo "source /opt/ros/kinetic/setup.bash" >> ~/.bashrc
