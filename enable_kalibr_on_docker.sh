@@ -1,7 +1,7 @@
 #!/bin/bash
 
 function run_with_docker() {
-    docker run --rm -v "/:/host" -w "/host/$(pwd)" kalibr:latest "$@"
+    sudo docker run -it --rm -v "/:/host" -w "/host/$(pwd)" kalibr:latest "$@"
 }
 
 function kalibr_calibrate_cameras() {
