@@ -1,0 +1,41 @@
+import glob
+import os
+import os.path as osp
+import pdb
+import shutil
+import subprocess as subp
+
+import click
+
+
+def remake_dir(dir_name):
+    if osp.exists(dir_name):
+        shutil.rmtree(dir_name)
+    os.mkdir(dir_name)
+
+
+# ToDo : Modify to not depend hardcoding
+CAMERA_NAME_LIST = ["Camera_L", "Camera_R", "Rgb"]
+
+
+@click.command()
+@click.option('--image_parent_dir', '-i', required=True)
+@click.option('--output_parent_dir', '-o', required=True)
+@click.option('--toml-path', '-t', required=True)
+@click.option('--tag-size', '-s', required=True)
+@click.option('--n_board', '-n', required=True)
+@click.option('--board_col', '-c', default=1)
+@click.option('--board_row', '-r', default=1)
+def main(image_parent_dir, output_parent_dir, toml_path, tag_size, n_board, board_col, board_row):
+    global CAMERA_NAME_LIST
+    camera_dirs = glob.glob(osp.join(image_parent_dir, "cam[0-9]"))
+    remake_dir(output_parent_dir)
+
+    for i, _camera_dir in enumerate(camera_dirs):
+        dir_name_base = osp.basename(_camera_dir)
+        subp.call(["generate_mask", "-t", toml_path, "-s", tag_size, "-b", CAMERA_NAME_LIST[i], "-i", _camera_dir,
+                   "-o", osp.join(output_parent_dir, dir_name_base), "-n", str(n_board), "-c", str(board_col), "-r", str(board_row)])
+
+
+if __name__ == "__main__":
+    main()

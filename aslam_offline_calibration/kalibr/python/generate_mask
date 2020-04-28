@@ -1,0 +1,409 @@
+#!/usr/bin/env python
+import pdb
+import os
+import functools
+import glob
+import os.path as osp
+import shutil
+import click
+import cv2
+import numpy as np
+import toml
+from april_detector_pywrapper import PyAprilTagDetector
+from sklearn.cluster import DBSCAN
+from tqdm import tqdm
+import sys
+sys.path.append(
+    "/home/catkin_ws/src/kalibr/aslam_offline_calibration/kalibr/python".
+    format(os.environ["USER"]))
+from kalibr_create_multi_target_pdf import *
+from pyx import *
+
+MIN_N_TAGS_PER_BOARD = 8
+n_frame_skip = 0
+scale = 1
+colors = [(255, 0, 0), (128, 128, 0), (0, 255, 0), (0, 128, 128), (0, 0, 255)]
+
+
+def getImgs(img_):
+    img = cv2.cvtColor(img_, cv2.COLOR_BGR2RGB)
+    res_masked_img = img.copy()
+    res_masked_img = cv2.cvtColor(res_masked_img, cv2.COLOR_BGR2RGB)
+    return img, res_masked_img
+
+
+def isolate_tag_discrimination(info_list, tag_size):
+    if len(info_list) > 5:
+        center_3d_ary = np.array([info[4] for info in info_list])
+        if np.sum(np.isnan(center_3d_ary.flatten())) or not np.prod(np.isfinite(center_3d_ary.flatten())) > 0:
+            inlier_label = np.repeat(False, len(info_list))
+            pdb.set_trace()
+        dbs = DBSCAN(eps=tag_size * 2, min_samples=5).fit(center_3d_ary)
+        labels = dbs.labels_
+        inlier_label = labels >= 0
+    else:
+        inlier_label = np.repeat(False, len(info_list))
+    return inlier_label
+
+
+def get_tag_wise_circle_mask_param(info):
+    corners = info[2][0]
+    tag_center = info[3].astype(np.int32)
+    mask_radius = int(np.max(np.sqrt(((corners - tag_center)**2).sum(axis=1))))
+    tag_center_tuple = (tag_center[0], tag_center[1])
+    return (mask_radius, tag_center_tuple)
+
+
+def generate_inlier_mask(info_list, inlier_label):
+    mask_param_list = []
+    for k, info in enumerate(info_list):
+        if inlier_label[k]:
+            mask_param_list.append(get_tag_wise_circle_mask_param(info))
+        else:
+            mask_param_list.append(())
+    return mask_param_list
+
+
+def duplicated_tag_detection(info_list, num_marker_per_board):
+    detected_tag_idx = np.array([info[0] for info in info_list])
+    detected_tag_cluster_idx = np.array([info[1] for info in info_list])
+    detected_tag_hash = detected_tag_cluster_idx * num_marker_per_board + detected_tag_idx
+    hash_idx, hash_count = np.unique(detected_tag_hash, return_counts=True)
+    dict_for_detect_duplication = dict(zip(hash_idx, hash_count))
+    is_unique = [
+        dict_for_detect_duplication[_tag_idx] == 1
+        for _tag_idx in detected_tag_hash
+    ]
+    return is_unique
+
+
+def generate_empty_each_mask_bucket(width, height, n_divide):
+    each_chart_mask_bucket = np.repeat(None, n_divide)
+    for n in range(n_divide):
+        tag_circle_mask_aggrigated = np.zeros([height, width], dtype=np.uint8)
+        tag_area_aggrigated = np.zeros([height, width], dtype=np.uint8)
+        each_chart_mask_bucket[n] = [
+            tag_circle_mask_aggrigated, tag_area_aggrigated
+        ]
+    return each_chart_mask_bucket
+
+
+def count_number_of_tag_per_chart(info_list, is_unique, width, height, n_divide):
+    each_chart_mask_count_list = np.repeat(0, n_divide)
+    for k, info in enumerate(info_list):
+        tag_cluster_id = info[1]
+        if tag_cluster_id >= n_divide:
+            continue
+        if is_unique[k]:
+            each_chart_mask_count_list[tag_cluster_id] += 1
+    return each_chart_mask_count_list
+
+
+def cvtParam2CircleMask(circle_param, width, height):
+    _mask = np.zeros([height, width], dtype=np.uint8)
+    marker_radius = int(circle_param[0]*1.5)
+    marker_center_point = circle_param[1]
+    cv2.circle(_mask, marker_center_point, marker_radius, 255, -1)
+    return _mask
+
+
+def drawMaskWidthTags(res_img_, res_masked_img_, detector, width, height,
+                      taginfo_list, tag_size, tagFamililyData, n_divide,
+                      num_marker_per_board):
+    global colors
+
+    _drawMaskWithTags = functools.partial(detector.drawMaskWithTags,
+                                          height=height,
+                                          width=width,
+                                          tagSize=tag_size,
+                                          tagFamililyData=tagFamililyData,
+                                          n_divide=n_divide)
+    info_list = [_drawMaskWithTags(taginfo) for taginfo in taginfo_list]
+    each_chart_mask_bucket = generate_empty_each_mask_bucket(width, height, n_divide)
+
+    # Detect Duplicated Tags
+    is_unique = duplicated_tag_detection(info_list, num_marker_per_board)
+
+    # Separate Detected Tag Information
+    each_chart_mask_count_list = count_number_of_tag_per_chart(info_list, is_unique, width, height, n_divide)
+    inlier_label = isolate_tag_discrimination(info_list, tag_size)
+    tag_wised_mask_param_list = generate_inlier_mask(info_list, inlier_label)
+    mask_area_aggrigated = np.zeros([height, width], dtype=np.uint8)
+    for k, info in enumerate(info_list):
+        tag_cluster_id = info[1]
+        tag_area_mask = info[7]
+
+        if tag_cluster_id >= n_divide:
+            mask_area_aggrigated += tag_area_mask
+            continue
+
+        # Remove Isolate Tags
+        valid_tag_flag = True
+        valid_tag_flag &= is_unique[k]
+        valid_tag_flag &= each_chart_mask_count_list[tag_cluster_id] > MIN_N_TAGS_PER_BOARD
+        valid_tag_flag &= inlier_label[k]
+
+        if valid_tag_flag:
+            each_chart_mask_bucket[tag_cluster_id][0] = cv2.bitwise_or(
+                each_chart_mask_bucket[tag_cluster_id][0], cvtParam2CircleMask(tag_wised_mask_param_list[k], width, height)
+                )
+            each_chart_mask_bucket[tag_cluster_id][1] += tag_area_mask
+            each_chart_mask_count_list[tag_cluster_id] += 1
+        else:
+            mask_area_aggrigated += tag_area_mask
+
+    # Detect All Tag Region
+    each_chart_final_mask_bucket = np.repeat(None, n_divide)
+    for tag_cluster_id in range(n_divide):
+        # if each_chart_mask_count_list[tag_cluster_id] > 0:
+        mask_area_aggrigated = cv2.bitwise_or(
+            mask_area_aggrigated,
+            each_chart_mask_bucket[tag_cluster_id][1].astype(np.uint8))
+
+    # Extract Each Tag Board
+    for tag_cluster_id in range(n_divide):
+        # min detected sample
+        if each_chart_mask_count_list[tag_cluster_id] > MIN_N_TAGS_PER_BOARD:
+            res_masked_img = res_masked_img_.copy()
+            tag_area_aggrigated = each_chart_mask_bucket[tag_cluster_id][1].astype(np.uint8)
+            drawing_mask_area = cv2.bitwise_xor(mask_area_aggrigated.copy(), tag_area_aggrigated.copy())
+            _near_tag_area_mask = each_chart_mask_bucket[tag_cluster_id][0]
+            drawing_mask_area = cv2.bitwise_or(drawing_mask_area, cv2.bitwise_not(_near_tag_area_mask))
+            y_ind, x_ind = np.where(drawing_mask_area > 0)
+            res_masked_img[y_ind, x_ind, :] = 255
+            each_chart_final_mask_bucket[tag_cluster_id] = res_masked_img
+
+    res_status = np.sum(np.logical_not(is_unique)) == 0
+    return each_chart_final_mask_bucket, res_status
+
+#TODO: Add explanation comments
+def get_detection_results_each_chart(each_chart_36H11tags_bucket, n_divide,
+                                     timestamp_width):
+    out_image_list = []
+    out_timestamp_list = []
+    out_tag_cluster_list = []
+    for tag_cluster_id in range(n_divide):
+        clusterized_tags_bucket = each_chart_36H11tags_bucket[tag_cluster_id]
+
+        for i in range(len(clusterized_tags_bucket)):
+            clusterized_tags_bucket[i][0] = str(
+                int(clusterized_tags_bucket[i][0]) +
+                timestamp_width * tag_cluster_id)
+
+        if len(clusterized_tags_bucket) > 0:
+            time_stamp = np.array([
+                clusterized_tags_bucket[i][0]
+                for i in range(len(clusterized_tags_bucket))
+            ])
+            time_stamp = np.array(time_stamp).astype(np.float64) / 10e8
+            time_stamp -= np.median(time_stamp)
+            #10.0s window, 2 neighbor, remove isolation frame in the sense of time
+            dbs = DBSCAN(eps=100.0,
+                         min_samples=2).fit(time_stamp.reshape((-1, 1)))
+            labels = dbs.labels_
+            labels_unique = np.unique(labels)
+            if (len(labels_unique) == 1) and (labels_unique[0] == -1):
+                continue
+            labels_inlier = labels_unique[labels_unique >= 0]
+            for label_inlier in labels_inlier:
+                inlier_timestamp_idxs = np.where(labels == label_inlier)[0]
+                out_image_list += [
+                    clusterized_tags_bucket[_idx][1]
+                    for _idx in inlier_timestamp_idxs
+                ]
+                out_timestamp_list += [
+                    clusterized_tags_bucket[_idx][0]
+                    for _idx in inlier_timestamp_idxs
+                ]
+                out_tag_cluster_list += np.repeat(
+                    tag_cluster_id, np.sum(labels == label_inlier)).tolist()
+
+    '''
+    first_appeared_chart_idx = np.nonzero([len(_bucket) for _bucket in each_chart_36H11tags_bucket])[0][0]
+    timestamp_end_previous_cluster = int(each_chart_36H11tags_bucket[first_appeared_chart_idx][0][0])
+
+    clusterized_tags_bucket = each_chart_36H11tags_bucket[tag_cluster_id]
+    for i in range(len(clusterized_tags_bucket)):
+        clusterized_tags_bucket[i][0] = str(
+            int(clusterized_tags_bucket[i][0]) +
+            timestamp_width * tag_cluster_id)    
+
+    for tag_cluster_id in range(n_divide):
+        clusterized_tags_bucket = each_chart_36H11tags_bucket[tag_cluster_id]
+        [len(_bucket) for _bucket in each_chart_36H11tags_bucket]
+        if len(clusterized_tags_bucket) > 0:
+
+            time_stamp = np.array([
+                clusterized_tags_bucket[i][0]
+                for i in range(len(clusterized_tags_bucket))
+            ])
+            time_stamp = np.array(time_stamp).astype(np.float64) / 10e8
+            #100.0s window, 2 neighbor frames, remove isolation frame in the sense of timeseries
+            dbs = DBSCAN(eps=100.0, min_samples=2).fit(time_stamp.reshape((-1, 1)))
+            labels = dbs.labels_
+            labels_unique, labels_counts = np.unique(labels, return_counts=True)
+            if (len(labels_unique) == 1) and (labels_unique[0] == -1):
+                continue
+            label_inlier_list = labels_unique[labels_unique > -1]
+
+            for label_inlier in labels_inlier:
+                inlier_timestamp_idxs = np.where(labels == label_inlier)[0]
+                out_image_list += [
+                    clusterized_tags_bucket[_idx][1]
+                    for _idx in inlier_timestamp_idxs
+                ]
+                out_timestamp_list += [
+                    clusterized_tags_bucket[_idx][0]
+                    for _idx in inlier_timestamp_idxs
+                ]
+                out_tag_cluster_list += np.repeat(
+                    tag_cluster_id, np.sum(labels == label_inlier)).tolist()
+    '''
+
+    '''
+            for k, label_inlier in enumerate(label_inlier_list):
+                if labels_counts[k] < MIN_N_TAGS_PER_BOARD:
+                    continue
+                inlier_timestamp_idxs = np.where(labels == label_inlier)[0]
+                out_image_list += [
+                    clusterized_tags_bucket[_idx][1]
+                    for _idx in inlier_timestamp_idxs
+                ]
+                out_tag_cluster_list += np.repeat(
+                    tag_cluster_id, np.sum(labels == label_inlier)).tolist()
+
+                timestamp_start_each_cluster = int(clusterized_tags_bucket[inlier_timestamp_idxs[0]][0])
+                _timestamp_diff_later = np.array([int(clusterized_tags_bucket[_idx][0]) for _idx in inlier_timestamp_idxs[1:]])
+                _timestamp_diff_pre = np.array([int(clusterized_tags_bucket[_idx][0]) for _idx in inlier_timestamp_idxs[:-1]])
+                timestamp_diff_median = np.median(_timestamp_diff_later - _timestamp_diff_pre)
+
+                _timestamp = [
+                    int(clusterized_tags_bucket[_idx][0]) - timestamp_start_each_cluster + timestamp_end_previous_cluster + timestamp_diff_median
+                    for _idx in inlier_timestamp_idxs
+                ]
+
+                out_timestamp_list += _timestamp
+                timestamp_end_previous_cluster = out_timestamp_list[-1]
+    '''
+
+    return out_image_list, out_timestamp_list, out_tag_cluster_list
+
+
+def output_36H11tag_images(output_image_list,
+                           timestamp_list,
+                           tag_cluster_list,
+                           save_dir_path,
+                           detector,
+                           erase_previous_result=True):
+    if not osp.exists(save_dir_path):
+        os.mkdir(save_dir_path)
+    else:
+        if erase_previous_result:
+            shutil.rmtree(save_dir_path)
+            os.mkdir(save_dir_path)
+
+    additional_time = 10
+    print("<Output Masked Images>")
+    pbar = tqdm(total=len(output_image_list))
+    for i, img in enumerate(output_image_list):
+        pbar.update(1)
+        timestamp = int(timestamp_list[i])
+        # Just for  first-aid treatment
+        #detector.getDetectedInfo(img, False)
+        #taginfo_list = detector.extractTagInfo()
+        #if len(taginfo_list) < MIN_N_TAGS_PER_BOARD:
+        #    continue
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+        cv2.imwrite(
+            osp.join(save_dir_path,
+                     "{}.png".format(int(timestamp + additional_time))), img)
+        cv2.waitKey(5)
+
+
+def remake_dir(dir_name):
+    if osp.exists(dir_name):
+        shutil.rmtree(dir_name)
+    os.mkdir(dir_name)
+
+
+@click.command()
+@click.option('--image_dir', '-i', required=True)
+@click.option('--output_dir', '-o', required=True)
+@click.option('--toml-path', '-t', required=True)
+@click.option('--camera-name', '-b', required=True)
+@click.option('--tag-size', '-s', required=True)
+@click.option('--n_divide', '-n', default=1)
+@click.option('--board_col', '-c', default=1)
+@click.option('--board_row', '-r', default=1)
+def main(image_dir, output_dir, toml_path, camera_name, tag_size, n_divide,
+         board_col, board_row):
+    cap_img_name_list = np.sort(glob.glob(osp.join(image_dir, "*.png")))
+    frame = cv2.imread(cap_img_name_list[0])
+    timestamp_width = int(osp.basename(cap_img_name_list[-1])[:-4]) - int(
+        osp.basename(cap_img_name_list[0])[:-4])
+
+    img, res_masked_img = getImgs(frame)
+    height, width, _ = img.shape
+    height = height / scale
+    width = width / scale
+
+    toml_params = toml.load(open(toml_path))
+    fx = float(toml_params["{}_Factory".format(camera_name)]["fx"])
+    fy = float(toml_params["{}_Factory".format(camera_name)]["fy"])
+    cx = float(toml_params["{}_Factory".format(camera_name)]["cx"])
+    cy = float(toml_params["{}_Factory".format(camera_name)]["cy"])
+    tag_size = float(tag_size)
+
+    detector = PyAprilTagDetector()
+    detector.setImageSize(width, height)
+    detector.setCameraParams(fx, fy, cx, cy)
+    detector.setTagSize(tag_size)
+    detector.setTagCodes("36h9")
+    detector.setup()
+
+    tagFamililyData = AprilTagCodes("t36h9")
+    each_chart_36H11tags_bucket = [[] for tag_cluster_id in range(n_divide)]
+
+    frame_count = 0
+    total_number_of_frame = cap_img_name_list.shape[0]
+
+    print("Total Number of Frame:{}".format(total_number_of_frame))
+    for i, cap_img_name in enumerate(cap_img_name_list):
+        frame = cv2.imread(cap_img_name)
+        time_stamp = osp.basename(cap_img_name[:-4])
+
+        if (n_frame_skip > 0) and (frame_count % n_frame_skip is not 0):
+            frame_count += 1
+            continue
+
+        if frame_count > total_number_of_frame:
+            break
+        print("Frame:{}/{}".format(frame_count, total_number_of_frame))
+
+        frame = cv2.resize(frame, (width, height))
+        img, res_masked_img = getImgs(frame)
+
+        detector.getDetectedInfo(img, False)
+        taginfo_list = detector.extractTagInfo()
+        res_img = detector.getDetectedImage()
+        result_bucket, res_status = drawMaskWidthTags(
+            res_img, res_masked_img, detector, width, height, taginfo_list,
+            tag_size, tagFamililyData, n_divide,
+            board_col * board_row)
+        for tag_cluster_id in range(n_divide):
+            if result_bucket[tag_cluster_id] is not None:
+                each_chart_36H11tags_bucket[tag_cluster_id].append(
+                    [time_stamp, result_bucket[tag_cluster_id]])
+
+        frame_count += 1
+
+    remake_dir(output_dir)
+    output_image_list, output_timestamp_list, output_tag_cluster_list = get_detection_results_each_chart(
+        each_chart_36H11tags_bucket, n_divide, timestamp_width)
+    output_36H11tag_images(output_image_list, output_timestamp_list,
+                            output_tag_cluster_list, output_dir, detector)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,17 @@
+###### Requirements without Version Specifiers ######
+toml
+ruamel.yaml
+numpy==1.11.0
+scipy==1.2.3
+tqdm
+cython
+opencv-python==3.4.9.31
+open3d-python
+scikit-learn
+cvui
+click
+pathlib==1.0.1
+pkgconfig==1.5.1
+
+#https://github.com/ethz-asl/kalibr/issues/92
+#python-pyx
